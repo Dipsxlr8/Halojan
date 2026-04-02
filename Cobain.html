@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Full Body & Gesture Tracker</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js" crossorigin="anonymous"></script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #121212;
+            color: white;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .container {
+            position: relative;
+            margin-top: 20px;
+        }
+        video {
+            display: none; /* Sembunyikan video asli, kita pakai canvas */
+        }
+        canvas {
+            border: 3px solid #00ffcc;
+            border-radius: 10px;
+            background-color: #000;
+            transform: scaleX(-1); /* Mirror efek seperti cermin */
+        }
+        .status-box {
+            margin-top: 20px;
+            padding: 20px;
+            background: #222;
+            border-radius: 10px;
+            text-align: center;
+            width: 80%;
+            max-width: 600px;
+        }
+        h2 { margin: 0 0 10px 0; color: #00ffcc; }
+        .gesture-text { font-size: 24px; font-weight: bold; color: #ffeb3b; }
+    </style>
+</head>
+<body>
+
+    <h1>🤖 Full Body & Gesture Tracking</h1>
+    
+    <div class="container">
+        <video class="input_video" width="640" height="480" autoplay playsinline></video>
+        <canvas class="output_canvas" width="640" height="480"></canvas>
+    </div>
+
+    <div class="status-box">
+        <h2>Deteksi Gesture</h2>
+        <div class="gesture-text" id="gesture-output">Mendeteksi... Menunggu posisi Anda</div>
+    </div>
+
+    <script>
+        const videoElement = document.querySelector('.input_video');
+        const canvasElement = document.querySelector('.output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const gestureOutput = document.getElementById('gesture-output');
+
+        // Fungsi untuk mendeteksi gesture tangan
+        function detectHandGesture(landmarks, handLabel) {
+            if (!landmarks) return null;
+
+            // Titik ujung jari (Tip) dan sendi bawah (PIP/MCP)
+            // Thumb: 4 (Tip), Index: 8, Middle: 12, Ring: 16, Pinky: 20
+            const isThumbOpen = landmarks[4].x < landmarks[3].x; // Asumsi sederhana
+            const isIndexOpen = landmarks[8].y < landmarks[6].y;
+            const isMiddleOpen = landmarks[12].y < landmarks[10].y;
+            const isRingOpen = landmarks[16].y < landmarks[14].y;
+            const isPinkyOpen = landmarks[20].y < landmarks[18].y;
+
+            if (!isThumbOpen && !isIndexOpen && !isMiddleOpen && !isRingOpen && !isPinkyOpen) {
+                return "Batu / Mengepal ✊";
+            } else if (isIndexOpen && isMiddleOpen && !isRingOpen && !isPinkyOpen) {
+                return "Peace ✌️";
+            } else if (!isIndexOpen && isMiddleOpen && !isRingOpen && !isPinkyOpen) {
+                return "Jari Tengah 🖕"; // Deteksi jari tengah
+            } else if (isIndexOpen && !isMiddleOpen && !isRingOpen && isPinkyOpen) {
+                return "Metal / Horns 🤘";
+            } else if (isThumbOpen && isIndexOpen && isMiddleOpen && isRingOpen && isPinkyOpen) {
+                return "Tangan Terbuka 🖐️";
+            }
+            return null;
+        }
+
+        // Fungsi untuk mendeteksi gesture tubuh
+        function detectBodyGesture(poseLandmarks) {
+            if (!poseLandmarks) return null;
+
+            const leftWrist = poseLandmarks[15];
+            const rightWrist = poseLandmarks[16];
+            const leftShoulder = poseLandmarks[11];
+            const rightShoulder = poseLandmarks[12];
+            const leftEar = poseLandmarks[7];
+            const rightEar = poseLandmarks[8];
+
+            // 1. Deteksi Tangan Menyilang (Crossed Arms)
+            // Jika x pergelangan tangan melewati x pergelangan tangan lainnya (posisi menyilang di depan dada)
+            if (leftWrist.visibility > 0.5 && rightWrist.visibility > 0.5) {
+                const isCrossed = leftWrist.x < rightWrist.x; // Karena layar dimirror
+                const atChestHeight = leftWrist.y > leftShoulder.y && rightWrist.y > rightShoulder.y;
+                if (isCrossed && atChestHeight) {
+                    return "Tangan Menyilang / Bersedekap 🙅";
+                }
+            }
+
+            // 2. Deteksi Pegang Kepala
+            // Jika y pergelangan tangan mendekati y telinga/mata
+            if (leftWrist.visibility > 0.5 && rightWrist.visibility > 0.5) {
+                const leftHandOnHead = leftWrist.y < leftShoulder.y && Math.abs(leftWrist.y - leftEar.y) < 0.15;
+                const rightHandOnHead = rightWrist.y < rightShoulder.y && Math.abs(rightWrist.y - rightEar.y) < 0.15;
+                
+                if (leftHandOnHead && rightHandOnHead) {
+                    return "Pegang Kepala / Pusing 🙆";
+                }
+            }
+
+            return null;
+        }
+
+        function onResults(results) {
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // Gambar video feed ke canvas
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            let detectedGesture = [];
+
+            // 1. Gambar dan Deteksi Tubuh (Pose)
+            if (results.poseLandmarks) {
+                drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
+                drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', lineWidth: 2});
+                
+                const bodyGesture = detectBodyGesture(results.poseLandmarks);
+                if (bodyGesture) detectedGesture.push(bodyGesture);
+            }
+
+            // 2. Gambar dan Deteksi Tangan Kiri
+            if (results.leftHandLandmarks) {
+                drawConnectors(canvasCtx, results.leftHandLandmarks, HAND_CONNECTIONS, {color: '#CC0000', lineWidth: 5});
+                drawLandmarks(canvasCtx, results.leftHandLandmarks, {color: '#00FF00', lineWidth: 2});
+                
+                const leftGesture = detectHandGesture(results.leftHandLandmarks, 'Kiri');
+                if (leftGesture) detectedGesture.push("Kiri: " + leftGesture);
+            }
+
+            // 3. Gambar dan Deteksi Tangan Kanan
+            if (results.rightHandLandmarks) {
+                drawConnectors(canvasCtx, results.rightHandLandmarks, HAND_CONNECTIONS, {color: '#00CC00', lineWidth: 5});
+                drawLandmarks(canvasCtx, results.rightHandLandmarks, {color: '#FF0000', lineWidth: 2});
+                
+                const rightGesture = detectHandGesture(results.rightHandLandmarks, 'Kanan');
+                if (rightGesture) detectedGesture.push("Kanan: " + rightGesture);
+            }
+
+            // 4. Gambar Wajah (Opsional, dihapus jika membuat lag)
+            if (results.faceLandmarks) {
+                drawConnectors(canvasCtx, results.faceLandmarks, FACEMESH_TESSELATION, {color: '#C0C0C070', lineWidth: 1});
+            }
+
+            // Update UI Teks
+            if (detectedGesture.length > 0) {
+                gestureOutput.innerText = detectedGesture.join(" | ");
+            } else {
+                gestureOutput.innerText = "Tidak ada gesture khusus yang terdeteksi";
+            }
+
+            canvasCtx.restore();
+        }
+
+        // Konfigurasi MediaPipe Holistic
+        const holistic = new Holistic({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`;
+        }});
+        
+        holistic.setOptions({
+            modelComplexity: 1,
+            smoothLandmarks: true,
+            enableSegmentation: false,
+            refineFaceLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        
+        holistic.onResults(onResults);
+
+        // Menyalakan Kamera
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await holistic.send({image: videoElement});
+            },
+            width: 640,
+            height: 480
+        });
+        camera.start();
+    </script>
+</body>
+</html>
